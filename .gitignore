@@ -1,6 +1,6 @@
-# Binaries
-splitwise
-splitwise-cli
+# Binaries (root-scoped so subdirs like skills/splitwise aren't ignored)
+/splitwise
+/splitwise-cli
 *.exe
 *.dll
 *.so

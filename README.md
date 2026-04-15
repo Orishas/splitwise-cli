@@ -20,7 +20,7 @@ The repository owner values above are placeholders and should be updated to matc
 ## Setup
 
 1. **Register a Splitwise app** at [secure.splitwise.com/apps](https://secure.splitwise.com/apps)
-   - Set the callback URL to `http://localhost:8484/callback`
+   - Set the callback URL to `http://localhost/callback` (the CLI listens on a random local port and does not rely on a fixed port).
 2. **Authenticate:**
 
 ```bash
@@ -29,7 +29,7 @@ splitwise auth
 
 You'll be prompted for your Client ID and Client Secret. The CLI opens your browser for OAuth, then stores the token at `~/.config/splitwise-cli/auth.json`.
 
-> **Note:** Splitwise ignores `redirect_uri` in OAuth requests and always uses the registered callback URL. If you hit `ERR_CONNECTION_REFUSED` after authorizing, do a manual token exchange with `curl` using the `code` from the URL.
+> **Note:** Splitwise ignores `redirect_uri` in OAuth requests and always uses the registered callback URL. If the registered URL is `http://localhost/callback` the browser will land on a page that can't connect; copy the `code` from the URL and complete the exchange manually with `curl`.
 
 ## Usage
 
@@ -45,6 +45,8 @@ splitwise group "Household"
 splitwise expenses list --group "Household" --limit 20
 splitwise expenses list --after 2025-01-01
 splitwise expenses create "Dinner" 85.50 --group "Household"
+splitwise expenses create "Groceries" 42.00 --paid-by "MemberB"
+splitwise expenses create "Utilities" 254.80 --split "exact:MemberA:152.88,MemberB:101.92"
 splitwise expenses delete 123456
 
 # Balances

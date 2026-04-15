@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -139,85 +140,39 @@ var expensesCreateCmd = &cobra.Command{
 			GroupID:      group.ID,
 		}
 
-		if split == "" || split == "even" {
-			p.SplitEqually = true
-		} else if strings.HasPrefix(split, "exact:") {
-			// Custom exact split: "exact:Name:Amount,Name:Amount"
-			me, err := client.GetCurrentUser()
-			if err != nil {
-				output.Die("failed to get current user: %v", err)
-			}
-
-			var payerID int64
-			if paidBy != "" {
-				found := false
-				lower := strings.ToLower(paidBy)
-				for _, m := range group.Members {
-					name := strings.ToLower(m.FirstName + " " + m.LastName)
-					if name == lower || strings.ToLower(m.FirstName) == lower {
-						payerID = m.ID
-						found = true
-						break
-					}
-				}
-				if !found {
-					output.Die("user not found in group: %s", paidBy)
-				}
+		switch {
+		case split == "" || split == "even":
+			if paidBy == "" {
+				// Default case: split equally, authenticated user pays.
+				p.SplitEqually = true
 			} else {
-				payerID = me.ID
-			}
-
-			// Parse "exact:Name:Amount,Name:Amount"
-			pairs := strings.Split(split[6:], ",") // skip "exact:"
-			owedMap := make(map[string]string) // lowercase name -> amount
-			var owedTotal float64
-			for _, pair := range pairs {
-				parts := strings.SplitN(pair, ":", 2)
-				if len(parts) != 2 {
-					output.Die("invalid split format: %s (expected Name:Amount)", pair)
-				}
-				name := strings.TrimSpace(parts[0])
-				amount := strings.TrimSpace(parts[1])
-				amtFloat, err := strconv.ParseFloat(amount, 64)
+				// Custom payer with even split: the API's split_equally=true
+				// always makes the authenticated user the payer, so build
+				// per-member shares manually.
+				payerID, err := resolveMemberInGroup(group, paidBy)
 				if err != nil {
-					output.Die("invalid amount for %s: %s", name, amount)
+					output.Die("%v", err)
 				}
-				owedMap[strings.ToLower(name)] = fmt.Sprintf("%.2f", amtFloat)
-				owedTotal += amtFloat
+				shares, err := buildEvenShares(group.Members, cost, payerID)
+				if err != nil {
+					output.Die("%v", err)
+				}
+				p.Shares = shares
 			}
-
-			// Validate total
-			costFloat, err := strconv.ParseFloat(cost, 64)
+		case strings.HasPrefix(split, "exact:"):
+			payerID, err := resolvePayer(client, group, paidBy)
 			if err != nil {
-				output.Die("invalid cost: %s", cost)
+				output.Die("%v", err)
 			}
-			if fmt.Sprintf("%.2f", owedTotal) != fmt.Sprintf("%.2f", costFloat) {
-				output.Die("split amounts (%.2f) don't add up to total (%.2f)", owedTotal, costFloat)
+			shares, err := buildExactShares(group.Members, cost, payerID, split[len("exact:"):])
+			if err != nil {
+				output.Die("%v", err)
 			}
-
-			// Build shares for each group member
-			for _, m := range group.Members {
-				paid := "0.00"
-				if m.ID == payerID {
-					paid = cost
-				}
-				owed := "0.00"
-				lowerFirst := strings.ToLower(m.FirstName)
-				lowerFull := strings.ToLower(m.FirstName + " " + m.LastName)
-				if amt, ok := owedMap[lowerFirst]; ok {
-					owed = amt
-				} else if amt, ok := owedMap[lowerFull]; ok {
-					owed = amt
-				}
-				p.Shares = append(p.Shares, api.ShareParam{
-					UserID:    m.ID,
-					PaidShare: paid,
-					OwedShare: owed,
-				})
-			}
-			p.SplitEqually = false
-		} else if split == "exact" {
+			p.Shares = shares
+		case split == "exact":
 			output.Die("exact split requires amounts — use format: exact:Name:Amount,Name:Amount")
+		default:
+			output.Die("unknown split type: %s", split)
 		}
 
 		expense, err := client.CreateExpense(p)
@@ -265,6 +220,135 @@ var expensesDeleteCmd = &cobra.Command{
 
 		output.Green.Printf("✓ Deleted expense #%d\n", id)
 	},
+}
+
+// resolveMemberInGroup returns the ID of the group member whose first name
+// or full name matches `name` (case-insensitive).
+func resolveMemberInGroup(group *api.Group, name string) (int64, error) {
+	lower := strings.ToLower(strings.TrimSpace(name))
+	for _, m := range group.Members {
+		first := strings.ToLower(m.FirstName)
+		full := strings.ToLower(strings.TrimSpace(m.FirstName + " " + m.LastName))
+		if first == lower || full == lower {
+			return m.ID, nil
+		}
+	}
+	return 0, fmt.Errorf("user not found in group: %s", name)
+}
+
+// resolvePayer returns the payer's user ID: the user named by `paidBy` if set,
+// otherwise the currently authenticated user.
+func resolvePayer(client *api.Client, group *api.Group, paidBy string) (int64, error) {
+	if paidBy != "" {
+		return resolveMemberInGroup(group, paidBy)
+	}
+	me, err := client.GetCurrentUser()
+	if err != nil {
+		return 0, fmt.Errorf("failed to get current user: %w", err)
+	}
+	return me.ID, nil
+}
+
+// buildEvenShares splits `cost` evenly among `members` with `payerID` paying
+// the full amount. Amounts are computed in cents so shares sum exactly to the
+// cost; any rounding remainder is distributed one cent at a time across
+// members (ordered by ID for deterministic output).
+func buildEvenShares(members []api.GroupMember, cost string, payerID int64) ([]api.ShareParam, error) {
+	if len(members) == 0 {
+		return nil, fmt.Errorf("group has no members")
+	}
+	costFloat, err := strconv.ParseFloat(cost, 64)
+	if err != nil {
+		return nil, fmt.Errorf("invalid cost: %s", cost)
+	}
+	costCents := int64(math.Round(costFloat * 100))
+	n := int64(len(members))
+	base := costCents / n
+	remainder := costCents - base*n
+
+	payerSeen := false
+	shares := make([]api.ShareParam, 0, len(members))
+	for i, m := range members {
+		if m.ID == payerID {
+			payerSeen = true
+		}
+		owedCents := base
+		if int64(i) < remainder {
+			owedCents++
+		}
+		paid := "0.00"
+		if m.ID == payerID {
+			paid = fmt.Sprintf("%.2f", float64(costCents)/100)
+		}
+		shares = append(shares, api.ShareParam{
+			UserID:    m.ID,
+			PaidShare: paid,
+			OwedShare: fmt.Sprintf("%.2f", float64(owedCents)/100),
+		})
+	}
+	if !payerSeen {
+		return nil, fmt.Errorf("payer is not a member of the group")
+	}
+	return shares, nil
+}
+
+// buildExactShares parses "Name:Amount,Name:Amount" and builds shares for
+// every group member. `payerID` pays the full cost; members not mentioned in
+// the spec owe 0. The sum of owed amounts must equal `cost`.
+func buildExactShares(members []api.GroupMember, cost string, payerID int64, spec string) ([]api.ShareParam, error) {
+	owedMap := make(map[string]string)
+	var owedTotal float64
+	for _, pair := range strings.Split(spec, ",") {
+		parts := strings.SplitN(pair, ":", 2)
+		if len(parts) != 2 {
+			return nil, fmt.Errorf("invalid split format: %s (expected Name:Amount)", pair)
+		}
+		name := strings.TrimSpace(parts[0])
+		amount := strings.TrimSpace(parts[1])
+		amt, err := strconv.ParseFloat(amount, 64)
+		if err != nil {
+			return nil, fmt.Errorf("invalid amount for %s: %s", name, amount)
+		}
+		owedMap[strings.ToLower(name)] = fmt.Sprintf("%.2f", amt)
+		owedTotal += amt
+	}
+
+	costFloat, err := strconv.ParseFloat(cost, 64)
+	if err != nil {
+		return nil, fmt.Errorf("invalid cost: %s", cost)
+	}
+	if fmt.Sprintf("%.2f", owedTotal) != fmt.Sprintf("%.2f", costFloat) {
+		return nil, fmt.Errorf("split amounts (%.2f) don't add up to total (%.2f)", owedTotal, costFloat)
+	}
+
+	payerSeen := false
+	shares := make([]api.ShareParam, 0, len(members))
+	for _, m := range members {
+		if m.ID == payerID {
+			payerSeen = true
+		}
+		paid := "0.00"
+		if m.ID == payerID {
+			paid = cost
+		}
+		owed := "0.00"
+		lowerFirst := strings.ToLower(m.FirstName)
+		lowerFull := strings.ToLower(strings.TrimSpace(m.FirstName + " " + m.LastName))
+		if amt, ok := owedMap[lowerFirst]; ok {
+			owed = amt
+		} else if amt, ok := owedMap[lowerFull]; ok {
+			owed = amt
+		}
+		shares = append(shares, api.ShareParam{
+			UserID:    m.ID,
+			PaidShare: paid,
+			OwedShare: owed,
+		})
+	}
+	if !payerSeen {
+		return nil, fmt.Errorf("payer is not a member of the group")
+	}
+	return shares, nil
 }
 
 func init() {
