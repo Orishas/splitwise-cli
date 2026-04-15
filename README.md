@@ -51,6 +51,7 @@ splitwise expenses create "Groceries" 42.00 --paid-by "MemberB"
 splitwise expenses create "Utilities" 254.80 --split "exact:MemberA:152.88,MemberB:101.92"
 splitwise expenses create "Dinner last week" 50 --date 2026-04-08 --details "Thai place"
 splitwise expenses delete 123456
+splitwise expenses restore 123456
 
 # Balances
 splitwise balances

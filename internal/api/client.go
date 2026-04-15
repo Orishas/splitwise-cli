@@ -266,19 +266,18 @@ func (c *Client) GetFriends() ([]Friend, error) {
 }
 
 // GetExpensesParams holds query parameters for listing expenses.
-// All fields are optional; zero-values are omitted from the request.
+// All fields map 1:1 to the query parameters documented at
+// https://github.com/splitwise/api-docs (paths/get_expenses.yaml).
+// Zero values are omitted from the request.
 type GetExpensesParams struct {
 	GroupID       int64
 	FriendID      int64
-	DatedAfter    string // ISO 8601 date or datetime
+	DatedAfter    string // ISO 8601 date-time
 	DatedBefore   string
 	UpdatedAfter  string
 	UpdatedBefore string
 	Limit         int
 	Offset        int
-	// Visible, when non-nil, is sent to the server. The Splitwise API
-	// filters out deleted expenses when this is true.
-	Visible *bool
 }
 
 // GetExpenses returns expenses matching the given criteria.
@@ -307,9 +306,6 @@ func (c *Client) GetExpenses(p GetExpensesParams) ([]Expense, error) {
 	}
 	if p.Offset > 0 {
 		params.Set("offset", fmt.Sprintf("%d", p.Offset))
-	}
-	if p.Visible != nil {
-		params.Set("visible", fmt.Sprintf("%t", *p.Visible))
 	}
 	data, err := c.get("/get_expenses", params)
 	if err != nil {
@@ -451,7 +447,19 @@ func (c *Client) postExpense(path string, params url.Values, errPrefix string) (
 
 // DeleteExpense deletes an expense by ID.
 func (c *Client) DeleteExpense(id int64) error {
-	data, err := c.post(fmt.Sprintf("/delete_expense/%d", id), nil)
+	return c.expenseAction(fmt.Sprintf("/delete_expense/%d", id), "delete failed")
+}
+
+// UndeleteExpense restores a previously deleted expense.
+// Maps to POST /undelete_expense/{id} in the Splitwise API.
+func (c *Client) UndeleteExpense(id int64) error {
+	return c.expenseAction(fmt.Sprintf("/undelete_expense/%d", id), "restore failed")
+}
+
+// expenseAction POSTs to a {success: bool, errors: {...}} endpoint and
+// returns a wrapped error on failure.
+func (c *Client) expenseAction(path, errPrefix string) error {
+	data, err := c.post(path, nil)
 	if err != nil {
 		return err
 	}
@@ -464,9 +472,9 @@ func (c *Client) DeleteExpense(id int64) error {
 	}
 	if !resp.Success {
 		if msg := formatAPIErrors(resp.Errors); msg != "" {
-			return fmt.Errorf("delete failed: %s", msg)
+			return fmt.Errorf("%s: %s", errPrefix, msg)
 		}
-		return fmt.Errorf("delete failed")
+		return fmt.Errorf("%s", errPrefix)
 	}
 	return nil
 }

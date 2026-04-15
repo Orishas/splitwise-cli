@@ -46,10 +46,6 @@ var expensesListCmd = &cobra.Command{
 			DatedAfter:  after,
 			DatedBefore: before,
 		}
-		if !showAll {
-			visible := true
-			p.Visible = &visible
-		}
 
 		if groupName != "" {
 			group, err := client.ResolveGroupByName(groupName)
@@ -62,6 +58,18 @@ var expensesListCmd = &cobra.Command{
 		expenses, err := client.GetExpenses(p)
 		if err != nil {
 			output.Die("%v", err)
+		}
+
+		// /get_expenses returns soft-deleted rows; hide them unless --all
+		// is set. (The Splitwise API has no server-side filter for this.)
+		if !showAll {
+			filtered := expenses[:0]
+			for _, e := range expenses {
+				if e.DeletedAt == nil {
+					filtered = append(filtered, e)
+				}
+			}
+			expenses = filtered
 		}
 
 		if jsonOut {
@@ -285,6 +293,33 @@ var expensesDeleteCmd = &cobra.Command{
 	},
 }
 
+var expensesRestoreCmd = &cobra.Command{
+	Use:   "restore <id>",
+	Short: "Restore a previously deleted expense",
+	Args:  cobra.ExactArgs(1),
+	Run: func(cmd *cobra.Command, args []string) {
+		client, err := api.New()
+		if err != nil {
+			output.Die("%v", err)
+		}
+
+		id, err := strconv.ParseInt(args[0], 10, 64)
+		if err != nil {
+			output.Die("invalid expense ID: %s", args[0])
+		}
+
+		if err := client.UndeleteExpense(id); err != nil {
+			output.Die("%v", err)
+		}
+
+		if quiet {
+			return
+		}
+
+		output.Green.Printf("✓ Restored expense #%d\n", id)
+	},
+}
+
 // resolveMemberInGroup returns the ID of the group member whose first name
 // or full name matches `name` (case-insensitive).
 func resolveMemberInGroup(group *api.Group, name string) (int64, error) {
@@ -431,6 +466,7 @@ func init() {
 	expensesCmd.AddCommand(expensesListCmd)
 	expensesCmd.AddCommand(expensesCreateCmd)
 	expensesCmd.AddCommand(expensesDeleteCmd)
+	expensesCmd.AddCommand(expensesRestoreCmd)
 	expensesCmd.AddCommand(expensesShowCmd)
 	rootCmd.AddCommand(expensesCmd)
 }

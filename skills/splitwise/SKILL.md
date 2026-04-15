@@ -1,7 +1,7 @@
 ---
 name: splitwise
 description: Manage shared expenses via the Splitwise CLI. Use when asked to log, split, or track expenses with other people, check balances, see who owes whom, settle debts, or list recent charges. Triggers on mentions of Splitwise, shared expenses, splitting costs, "log this expense," "who owes what," roommate/partner bills, or any expense-tracking request. Even casual mentions like "split this with a roommate" or "add the internet bill" should trigger this skill.
-version: 1.0.3
+version: 1.0.4
 metadata:
   openclaw:
     requires:
@@ -87,6 +87,7 @@ splitwise group "Household"           # Group details + member balances
 splitwise friends                     # List friends
 splitwise settle "MemberB"            # Record a settlement (handles multiple currencies)
 splitwise expenses delete 12345       # Delete an expense by ID
+splitwise expenses restore 12345      # Restore a previously deleted expense
 ```
 
 ## Output Modes
