@@ -1,7 +1,7 @@
 ---
 name: splitwise
 description: Manage shared expenses via the Splitwise CLI. Use when asked to log, split, or track expenses with other people, check balances, see who owes whom, settle debts, or list recent charges. Triggers on mentions of Splitwise, shared expenses, splitting costs, "log this expense," "who owes what," roommate/partner bills, or any expense-tracking request. Even casual mentions like "split this with a roommate" or "add the internet bill" should trigger this skill.
-version: 1.0.1
+version: 1.0.2
 metadata:
   openclaw:
     requires:
@@ -55,7 +55,7 @@ splitwise expenses create "Internet - March" 51.30
 splitwise expenses create "Utilities - March 2026" 254.80 --split "exact:MemberA:152.88,MemberB:101.92"
 splitwise expenses create "Rent - April" 9300 --split "exact:MemberA:7300,MemberB:2000"
 
-# Another member paid
+# Another member paid (even split)
 splitwise expenses create "Groceries" 87.50 --paid-by "MemberB"
 
 # Another member paid with custom split
@@ -116,4 +116,4 @@ Run multiple `splitwise expenses create` commands in sequence. No special syntax
 - Amounts are USD by default (configurable via `splitwise config set default_currency`)
 - `--split even` is the default — expense split equally among all group members
 - `--split "exact:Name:Amount,Name:Amount"` — custom per-person split (amounts must sum to total)
-- The `--paid-by` flag defaults to the authenticated user
+- The `--paid-by` flag defaults to the authenticated user and works with both even and exact splits. Names use the same case-insensitive first/full-name matching as group and friend resolution.
