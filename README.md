@@ -4,18 +4,34 @@ A fast CLI for [Splitwise](https://www.splitwise.com). Manage groups, expenses, 
 
 ## Install
 
+### From source (recommended)
+
+Requires Go 1.22+.
+
 ```bash
-brew tap example/tap
+git clone <this-repo-url>
+cd splitwise-cli
+go build -o splitwise .
+./splitwise --version
+```
+
+Move the binary somewhere on your `PATH`, e.g. `mv splitwise /usr/local/bin/`.
+
+### Pre-built binaries (requires your own fork)
+
+The Homebrew tap and `go install` paths below reference the placeholder org
+`example` (see `go.mod`, `.goreleaser.yml`, `Formula/splitwise.rb`). To use them
+you need to fork this repo, replace `example` with your GitHub user/org in those
+files, and publish releases via [GoReleaser](https://goreleaser.com/).
+
+```bash
+# After you've published your own fork + tap:
+brew tap <your-user>/tap
 brew install splitwise
+
+# Or:
+go install github.com/<your-user>/splitwise-cli@latest
 ```
-
-Or with Go:
-
-```bash
-go install github.com/example/splitwise-cli@latest
-```
-
-The repository owner values above are placeholders and should be updated to match your own distribution endpoints.
 
 ## Setup
 
