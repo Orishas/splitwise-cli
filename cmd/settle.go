@@ -62,71 +62,84 @@ balance. Use --group to settle within a specific group context.`,
 			output.Die("failed to get current user: %v", err)
 		}
 
-		// Find balance with this friend.
-		if len(friend.Balance) == 0 {
+		// Collect all non-zero balances (Splitwise may track balances per currency).
+		type pendingBal struct {
+			amount float64
+			code   string
+		}
+		var pending []pendingBal
+		for _, b := range friend.Balance {
+			amt, err := strconv.ParseFloat(b.Amount, 64)
+			if err != nil {
+				output.Die("invalid balance amount: %s", b.Amount)
+			}
+			if amt != 0 {
+				pending = append(pending, pendingBal{amount: amt, code: b.CurrencyCode})
+			}
+		}
+		if len(pending) == 0 {
 			fmt.Printf("Already settled up with %s %s! 🎉\n", friend.FirstName, friend.LastName)
 			return
 		}
 
-		bal := friend.Balance[0]
-		amount, err := strconv.ParseFloat(bal.Amount, 64)
-		if err != nil {
-			output.Die("invalid balance amount: %s", bal.Amount)
-		}
-		if amount == 0 {
-			fmt.Printf("Already settled up with %s %s! 🎉\n", friend.FirstName, friend.LastName)
-			return
-		}
-
-		absAmount := fmt.Sprintf("%.2f", math.Abs(amount))
-
-		p := api.CreateExpenseParams{
-			Cost:         absAmount,
-			CurrencyCode: bal.CurrencyCode,
-		}
-
+		var groupID int64
 		if groupName != "" {
 			group, err := client.ResolveGroupByName(groupName)
 			if err != nil {
 				output.Die("%v", err)
 			}
-			p.GroupID = group.ID
-		}
-
-		if amount > 0 {
-			// Friend owes me → friend pays me.
-			p.Shares = []api.ShareParam{
-				{UserID: friend.ID, PaidShare: absAmount, OwedShare: "0.00"},
-				{UserID: me.ID, PaidShare: "0.00", OwedShare: absAmount},
-			}
-		} else {
-			// I owe friend → I pay friend.
-			p.Shares = []api.ShareParam{
-				{UserID: me.ID, PaidShare: absAmount, OwedShare: "0.00"},
-				{UserID: friend.ID, PaidShare: "0.00", OwedShare: absAmount},
-			}
-		}
-
-		expense, err := client.CreatePayment(p)
-		if err != nil {
-			output.Die("%v", err)
-		}
-
-		if jsonOut {
-			output.JSON(expense)
-			return
-		}
-
-		if quiet {
-			fmt.Println(expense.ID)
-			return
+			groupID = group.ID
 		}
 
 		friendName := strings.TrimSpace(friend.FirstName + " " + friend.LastName)
-		if amount > 0 {
-			output.Green.Printf("✓ Recorded settlement: %s paid you %s %s\n", friendName, absAmount, bal.CurrencyCode)
-		} else {
-			output.Green.Printf("✓ Recorded settlement: you paid %s %s %s\n", friendName, absAmount, bal.CurrencyCode)
+		var recorded []*api.Expense
+		for _, bal := range pending {
+			absAmount := fmt.Sprintf("%.2f", math.Abs(bal.amount))
+
+			p := api.CreateExpenseParams{
+				Cost:         absAmount,
+				CurrencyCode: bal.code,
+				GroupID:      groupID,
+			}
+			if bal.amount > 0 {
+				// Friend owes me → friend pays me.
+				p.Shares = []api.ShareParam{
+					{UserID: friend.ID, PaidShare: absAmount, OwedShare: "0.00"},
+					{UserID: me.ID, PaidShare: "0.00", OwedShare: absAmount},
+				}
+			} else {
+				// I owe friend → I pay friend.
+				p.Shares = []api.ShareParam{
+					{UserID: me.ID, PaidShare: absAmount, OwedShare: "0.00"},
+					{UserID: friend.ID, PaidShare: "0.00", OwedShare: absAmount},
+				}
+			}
+
+			expense, err := client.CreatePayment(p)
+			if err != nil {
+				output.Die("%v", err)
+			}
+			recorded = append(recorded, expense)
+
+			if jsonOut || quiet {
+				continue
+			}
+			if bal.amount > 0 {
+				output.Green.Printf("✓ Recorded settlement: %s paid you %s %s\n", friendName, absAmount, bal.code)
+			} else {
+				output.Green.Printf("✓ Recorded settlement: you paid %s %s %s\n", friendName, absAmount, bal.code)
+			}
+		}
+
+		if jsonOut {
+			output.JSON(recorded)
+			return
+		}
+		if quiet {
+			for _, e := range recorded {
+				fmt.Println(e.ID)
+			}
+			return
 		}
 	},
 }

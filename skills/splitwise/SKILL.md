@@ -1,7 +1,7 @@
 ---
 name: splitwise
 description: Manage shared expenses via the Splitwise CLI. Use when asked to log, split, or track expenses with other people, check balances, see who owes whom, settle debts, or list recent charges. Triggers on mentions of Splitwise, shared expenses, splitting costs, "log this expense," "who owes what," roommate/partner bills, or any expense-tracking request. Even casual mentions like "split this with a roommate" or "add the internet bill" should trigger this skill.
-version: 1.0.2
+version: 1.0.3
 metadata:
   openclaw:
     requires:
@@ -36,7 +36,7 @@ splitwise balances --group "Trip"
 
 ### List expenses
 ```bash
-# Recent expenses in default group
+# Recent expenses in default group (deleted expenses are filtered out by default)
 splitwise expenses list --limit 10
 
 # Date-filtered
@@ -44,6 +44,14 @@ splitwise expenses list --after 2026-03-01 --before 2026-03-31
 
 # Different group
 splitwise expenses list --group "Trip" --limit 5
+
+# Include deleted expenses (for auditing)
+splitwise expenses list --all
+```
+
+### Inspect a single expense
+```bash
+splitwise expenses show 12345
 ```
 
 ### Create an expense
@@ -66,6 +74,9 @@ splitwise expenses create "Dinner" 120.00 --group "Trip"
 
 # Different currency
 splitwise expenses create "Dinner on Trip" 45.00 --group "Trip" --currency EUR
+
+# Backdated expense with notes
+splitwise expenses create "Thai dinner" 62.40 --date 2026-04-08 --details "Split with Sam"
 ```
 
 ### Other commands
@@ -74,7 +85,7 @@ splitwise me                          # Current user info
 splitwise groups                      # List all groups
 splitwise group "Household"           # Group details + member balances
 splitwise friends                     # List friends
-splitwise settle "MemberB"            # Record a settlement
+splitwise settle "MemberB"            # Record a settlement (handles multiple currencies)
 splitwise expenses delete 12345       # Delete an expense by ID
 ```
 

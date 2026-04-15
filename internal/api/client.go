@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"time"
 
@@ -265,13 +266,19 @@ func (c *Client) GetFriends() ([]Friend, error) {
 }
 
 // GetExpensesParams holds query parameters for listing expenses.
+// All fields are optional; zero-values are omitted from the request.
 type GetExpensesParams struct {
-	GroupID     int64
-	FriendID   int64
-	DatedAfter string
-	DatedBefore string
-	Limit      int
-	Offset     int
+	GroupID       int64
+	FriendID      int64
+	DatedAfter    string // ISO 8601 date or datetime
+	DatedBefore   string
+	UpdatedAfter  string
+	UpdatedBefore string
+	Limit         int
+	Offset        int
+	// Visible, when non-nil, is sent to the server. The Splitwise API
+	// filters out deleted expenses when this is true.
+	Visible *bool
 }
 
 // GetExpenses returns expenses matching the given criteria.
@@ -289,11 +296,20 @@ func (c *Client) GetExpenses(p GetExpensesParams) ([]Expense, error) {
 	if p.DatedBefore != "" {
 		params.Set("dated_before", p.DatedBefore)
 	}
+	if p.UpdatedAfter != "" {
+		params.Set("updated_after", p.UpdatedAfter)
+	}
+	if p.UpdatedBefore != "" {
+		params.Set("updated_before", p.UpdatedBefore)
+	}
 	if p.Limit > 0 {
 		params.Set("limit", fmt.Sprintf("%d", p.Limit))
 	}
 	if p.Offset > 0 {
 		params.Set("offset", fmt.Sprintf("%d", p.Offset))
+	}
+	if p.Visible != nil {
+		params.Set("visible", fmt.Sprintf("%t", *p.Visible))
 	}
 	data, err := c.get("/get_expenses", params)
 	if err != nil {
@@ -308,6 +324,24 @@ func (c *Client) GetExpenses(p GetExpensesParams) ([]Expense, error) {
 	return resp.Expenses, nil
 }
 
+// GetExpense returns a single expense by ID.
+func (c *Client) GetExpense(id int64) (*Expense, error) {
+	data, err := c.get(fmt.Sprintf("/get_expense/%d", id), nil)
+	if err != nil {
+		return nil, err
+	}
+	var resp struct {
+		Expense *Expense `json:"expense"`
+	}
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return nil, fmt.Errorf("failed to parse response: %w", err)
+	}
+	if resp.Expense == nil {
+		return nil, fmt.Errorf("expense not found: %d", id)
+	}
+	return resp.Expense, nil
+}
+
 // CreateExpenseParams holds parameters for creating an expense.
 type CreateExpenseParams struct {
 	Description  string
@@ -315,8 +349,11 @@ type CreateExpenseParams struct {
 	CurrencyCode string
 	GroupID      int64
 	SplitEqually bool
-	Date         string
-	// For by-shares split: user_id -> {paid_share, owed_share}
+	Date         string // ISO 8601 date or datetime; empty = today on the server
+	Details      string // free-form notes
+	CategoryID   int    // Splitwise subcategory ID (0 = default)
+	// Shares is used for non-even splits. Each entry maps a user to their
+	// paid and owed share of the expense.
 	Shares []ShareParam
 }
 
@@ -326,50 +363,85 @@ type ShareParam struct {
 	OwedShare string
 }
 
-// CreateExpense creates a new expense.
-func (c *Client) CreateExpense(p CreateExpenseParams) (*Expense, error) {
+// encodeShares encodes a list of per-user shares using Splitwise's
+// `users__N__field` naming convention into the given url.Values.
+func encodeShares(params url.Values, shares []ShareParam) {
+	for i, s := range shares {
+		prefix := fmt.Sprintf("users__%d__", i)
+		params.Set(prefix+"user_id", fmt.Sprintf("%d", s.UserID))
+		params.Set(prefix+"paid_share", s.PaidShare)
+		params.Set(prefix+"owed_share", s.OwedShare)
+	}
+}
+
+// encodeCreateExpense builds the form body shared by CreateExpense and
+// CreatePayment. `payment` controls the payment=true flag.
+func encodeCreateExpense(p CreateExpenseParams, payment bool) url.Values {
 	params := url.Values{}
 	params.Set("description", p.Description)
 	params.Set("cost", p.Cost)
+	if payment {
+		params.Set("payment", "true")
+	}
 	if p.CurrencyCode != "" {
 		params.Set("currency_code", p.CurrencyCode)
 	}
 	if p.Date != "" {
 		params.Set("date", p.Date)
 	}
+	if p.Details != "" {
+		params.Set("details", p.Details)
+	}
+	if p.CategoryID > 0 {
+		params.Set("category_id", fmt.Sprintf("%d", p.CategoryID))
+	}
 
-	if p.SplitEqually {
+	switch {
+	case p.SplitEqually:
 		params.Set("group_id", fmt.Sprintf("%d", p.GroupID))
 		params.Set("split_equally", "true")
-	} else if len(p.Shares) > 0 {
+	case len(p.Shares) > 0:
 		if p.GroupID > 0 {
 			params.Set("group_id", fmt.Sprintf("%d", p.GroupID))
 		} else {
 			params.Set("group_id", "0")
 		}
-		for i, s := range p.Shares {
-			prefix := fmt.Sprintf("users__%d__", i)
-			params.Set(prefix+"user_id", fmt.Sprintf("%d", s.UserID))
-			params.Set(prefix+"paid_share", s.PaidShare)
-			params.Set(prefix+"owed_share", s.OwedShare)
-		}
+		encodeShares(params, p.Shares)
 	}
+	return params
+}
 
-	data, err := c.post("/create_expense", params)
+// CreateExpense creates a new expense.
+func (c *Client) CreateExpense(p CreateExpenseParams) (*Expense, error) {
+	params := encodeCreateExpense(p, false)
+	return c.postExpense("/create_expense", params, "expense creation failed")
+}
+
+// CreatePayment records a settlement (payment) between users. Description
+// defaults to "Payment" when not explicitly set.
+func (c *Client) CreatePayment(p CreateExpenseParams) (*Expense, error) {
+	if p.Description == "" {
+		p.Description = "Payment"
+	}
+	params := encodeCreateExpense(p, true)
+	return c.postExpense("/create_expense", params, "settlement failed")
+}
+
+// postExpense POSTs a create_expense form and parses the shared response envelope.
+func (c *Client) postExpense(path string, params url.Values, errPrefix string) (*Expense, error) {
+	data, err := c.post(path, params)
 	if err != nil {
 		return nil, err
 	}
-
 	var resp struct {
-		Expenses []Expense              `json:"expenses"`
-		Errors   map[string]interface{} `json:"errors"`
+		Expenses []Expense         `json:"expenses"`
+		Errors   map[string]any    `json:"errors"`
 	}
 	if err := json.Unmarshal(data, &resp); err != nil {
 		return nil, fmt.Errorf("failed to parse response: %w", err)
 	}
-	if len(resp.Errors) > 0 {
-		errData, _ := json.Marshal(resp.Errors)
-		return nil, fmt.Errorf("expense creation failed: %s", string(errData))
+	if msg := formatAPIErrors(resp.Errors); msg != "" {
+		return nil, fmt.Errorf("%s: %s", errPrefix, msg)
 	}
 	if len(resp.Expenses) == 0 {
 		return nil, fmt.Errorf("no expense returned")
@@ -384,63 +456,125 @@ func (c *Client) DeleteExpense(id int64) error {
 		return err
 	}
 	var resp struct {
-		Success bool                   `json:"success"`
-		Errors  map[string]interface{} `json:"errors"`
+		Success bool           `json:"success"`
+		Errors  map[string]any `json:"errors"`
 	}
 	if err := json.Unmarshal(data, &resp); err != nil {
 		return fmt.Errorf("failed to parse response: %w", err)
 	}
 	if !resp.Success {
-		errData, _ := json.Marshal(resp.Errors)
-		return fmt.Errorf("delete failed: %s", string(errData))
+		if msg := formatAPIErrors(resp.Errors); msg != "" {
+			return fmt.Errorf("delete failed: %s", msg)
+		}
+		return fmt.Errorf("delete failed")
 	}
 	return nil
 }
 
-// CreatePayment records a settlement (payment) between users.
-func (c *Client) CreatePayment(p CreateExpenseParams) (*Expense, error) {
-	params := url.Values{}
-	params.Set("description", "Payment")
-	params.Set("cost", p.Cost)
-	params.Set("payment", "true")
-	if p.CurrencyCode != "" {
-		params.Set("currency_code", p.CurrencyCode)
+// formatAPIErrors flattens Splitwise's {"errors": {"field": ["msg", ...]}}
+// envelope (also handles flat string maps and scalar values) into a single
+// human-readable string. Returns "" if there are no errors.
+func formatAPIErrors(errs map[string]any) string {
+	if len(errs) == 0 {
+		return ""
 	}
-	if p.GroupID > 0 {
-		params.Set("group_id", fmt.Sprintf("%d", p.GroupID))
-	} else {
-		params.Set("group_id", "0")
+	// Sort keys for stable output.
+	keys := make([]string, 0, len(errs))
+	for k := range errs {
+		keys = append(keys, k)
 	}
-	if p.Date != "" {
-		params.Set("date", p.Date)
-	}
-	for i, s := range p.Shares {
-		prefix := fmt.Sprintf("users__%d__", i)
-		params.Set(prefix+"user_id", fmt.Sprintf("%d", s.UserID))
-		params.Set(prefix+"paid_share", s.PaidShare)
-		params.Set(prefix+"owed_share", s.OwedShare)
-	}
+	sort.Strings(keys)
 
-	data, err := c.post("/create_expense", params)
+	var parts []string
+	for _, k := range keys {
+		for _, msg := range flattenErrorValue(errs[k]) {
+			if k == "base" {
+				parts = append(parts, msg)
+			} else {
+				parts = append(parts, fmt.Sprintf("%s: %s", k, msg))
+			}
+		}
+	}
+	return strings.Join(parts, "; ")
+}
+
+func flattenErrorValue(v any) []string {
+	switch x := v.(type) {
+	case string:
+		if x == "" {
+			return nil
+		}
+		return []string{x}
+	case []any:
+		var out []string
+		for _, item := range x {
+			out = append(out, flattenErrorValue(item)...)
+		}
+		return out
+	case map[string]any:
+		var out []string
+		keys := make([]string, 0, len(x))
+		for k := range x {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			for _, inner := range flattenErrorValue(x[k]) {
+				out = append(out, fmt.Sprintf("%s: %s", k, inner))
+			}
+		}
+		return out
+	case nil:
+		return nil
+	default:
+		return []string{fmt.Sprintf("%v", x)}
+	}
+}
+
+// Category is a Splitwise expense category (e.g. "Groceries").
+// ParentCategories contain subcategories — only subcategories can be used
+// as category_id on create_expense.
+type ParentCategory struct {
+	ID            int        `json:"id"`
+	Name          string     `json:"name"`
+	Icon          string     `json:"icon,omitempty"`
+	Subcategories []Category `json:"subcategories,omitempty"`
+}
+
+// GetCategories returns the full category tree.
+func (c *Client) GetCategories() ([]ParentCategory, error) {
+	data, err := c.get("/get_categories", nil)
 	if err != nil {
 		return nil, err
 	}
-
 	var resp struct {
-		Expenses []Expense              `json:"expenses"`
-		Errors   map[string]interface{} `json:"errors"`
+		Categories []ParentCategory `json:"categories"`
 	}
 	if err := json.Unmarshal(data, &resp); err != nil {
 		return nil, fmt.Errorf("failed to parse response: %w", err)
 	}
-	if len(resp.Errors) > 0 {
-		errData, _ := json.Marshal(resp.Errors)
-		return nil, fmt.Errorf("settlement failed: %s", string(errData))
+	return resp.Categories, nil
+}
+
+// Currency is a Splitwise currency descriptor.
+type Currency struct {
+	CurrencyCode string `json:"currency_code"`
+	Unit         string `json:"unit"`
+}
+
+// GetCurrencies returns the list of supported currencies.
+func (c *Client) GetCurrencies() ([]Currency, error) {
+	data, err := c.get("/get_currencies", nil)
+	if err != nil {
+		return nil, err
 	}
-	if len(resp.Expenses) == 0 {
-		return nil, fmt.Errorf("no expense returned")
+	var resp struct {
+		Currencies []Currency `json:"currencies"`
 	}
-	return &resp.Expenses[0], nil
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return nil, fmt.Errorf("failed to parse response: %w", err)
+	}
+	return resp.Currencies, nil
 }
 
 // ResolveGroupByName finds a group ID by name (case-insensitive partial match).

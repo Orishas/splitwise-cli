@@ -43,10 +43,13 @@ splitwise group "Household"
 
 # Expenses
 splitwise expenses list --group "Household" --limit 20
-splitwise expenses list --after 2025-01-01
+splitwise expenses list --after 2026-01-01
+splitwise expenses list --all                      # include deleted
+splitwise expenses show 123456
 splitwise expenses create "Dinner" 85.50 --group "Household"
 splitwise expenses create "Groceries" 42.00 --paid-by "MemberB"
 splitwise expenses create "Utilities" 254.80 --split "exact:MemberA:152.88,MemberB:101.92"
+splitwise expenses create "Dinner last week" 50 --date 2026-04-08 --details "Thai place"
 splitwise expenses delete 123456
 
 # Balances

@@ -31,6 +31,7 @@ var expensesListCmd = &cobra.Command{
 		limit, _ := cmd.Flags().GetInt("limit")
 		after, _ := cmd.Flags().GetString("after")
 		before, _ := cmd.Flags().GetString("before")
+		showAll, _ := cmd.Flags().GetBool("all")
 
 		// Resolve group if specified.
 		if groupName == "" {
@@ -44,6 +45,10 @@ var expensesListCmd = &cobra.Command{
 			Limit:       limit,
 			DatedAfter:  after,
 			DatedBefore: before,
+		}
+		if !showAll {
+			visible := true
+			p.Visible = &visible
 		}
 
 		if groupName != "" {
@@ -66,9 +71,6 @@ var expensesListCmd = &cobra.Command{
 
 		if quiet {
 			for _, e := range expenses {
-				if e.DeletedAt != nil {
-					continue
-				}
 				fmt.Printf("%d\t%s\t%s\n", e.ID, e.Cost, e.CurrencyCode)
 			}
 			return
@@ -76,9 +78,6 @@ var expensesListCmd = &cobra.Command{
 
 		var rows [][]string
 		for _, e := range expenses {
-			if e.DeletedAt != nil {
-				continue
-			}
 			date := e.Date
 			if t, err := time.Parse(time.RFC3339, e.Date); err == nil {
 				date = t.Format("2006-01-02")
@@ -114,6 +113,8 @@ var expensesCreateCmd = &cobra.Command{
 		split, _ := cmd.Flags().GetString("split")
 		currency, _ := cmd.Flags().GetString("currency")
 		paidBy, _ := cmd.Flags().GetString("paid-by")
+		date, _ := cmd.Flags().GetString("date")
+		details, _ := cmd.Flags().GetString("details")
 
 		// Resolve defaults.
 		cfg, _ := config.Load()
@@ -138,6 +139,8 @@ var expensesCreateCmd = &cobra.Command{
 			Cost:         cost,
 			CurrencyCode: currency,
 			GroupID:      group.ID,
+			Date:         date,
+			Details:      details,
 		}
 
 		switch {
@@ -192,6 +195,66 @@ var expensesCreateCmd = &cobra.Command{
 
 		output.Green.Printf("✓ Created expense #%d\n", expense.ID)
 		fmt.Printf("  %s — %s %s\n", expense.Description, expense.Cost, expense.CurrencyCode)
+	},
+}
+
+var expensesShowCmd = &cobra.Command{
+	Use:   "show <id>",
+	Short: "Show full details for a single expense",
+	Args:  cobra.ExactArgs(1),
+	Run: func(cmd *cobra.Command, args []string) {
+		client, err := api.New()
+		if err != nil {
+			output.Die("%v", err)
+		}
+
+		id, err := strconv.ParseInt(args[0], 10, 64)
+		if err != nil {
+			output.Die("invalid expense ID: %s", args[0])
+		}
+
+		expense, err := client.GetExpense(id)
+		if err != nil {
+			output.Die("%v", err)
+		}
+
+		if jsonOut {
+			output.JSON(expense)
+			return
+		}
+
+		date := expense.Date
+		if t, err := time.Parse(time.RFC3339, expense.Date); err == nil {
+			date = t.Format("2006-01-02")
+		}
+
+		output.Bold.Printf("%s\n", expense.Description)
+		fmt.Printf("  ID:       %d\n", expense.ID)
+		fmt.Printf("  Date:     %s\n", date)
+		fmt.Printf("  Amount:   %s %s\n", expense.Cost, expense.CurrencyCode)
+		if expense.Category != nil {
+			fmt.Printf("  Category: %s\n", expense.Category.Name)
+		}
+		if expense.Details != nil && *expense.Details != "" {
+			fmt.Printf("  Notes:    %s\n", *expense.Details)
+		}
+		if expense.Payment {
+			fmt.Println("  Type:     Payment / settlement")
+		}
+		if expense.DeletedAt != nil {
+			output.Faint.Printf("  (deleted at %s)\n", *expense.DeletedAt)
+		}
+		if len(expense.Users) > 0 {
+			fmt.Println()
+			output.Bold.Println("Shares:")
+			for _, s := range expense.Users {
+				name := "?"
+				if s.User != nil {
+					name = strings.TrimSpace(s.User.FirstName + " " + s.User.LastName)
+				}
+				fmt.Printf("  %-20s paid %s, owes %s\n", name, s.PaidShare, s.OwedShare)
+			}
+		}
 	},
 }
 
@@ -356,14 +419,18 @@ func init() {
 	expensesListCmd.Flags().IntP("limit", "l", 20, "Maximum number of expenses")
 	expensesListCmd.Flags().String("after", "", "Only expenses after this date (YYYY-MM-DD)")
 	expensesListCmd.Flags().String("before", "", "Only expenses before this date (YYYY-MM-DD)")
+	expensesListCmd.Flags().Bool("all", false, "Include deleted expenses")
 
 	expensesCreateCmd.Flags().StringP("group", "g", "", "Group to add expense to")
 	expensesCreateCmd.Flags().String("split", "even", `Split type: even, or exact:Name:Amount,Name:Amount (e.g. "exact:MemberA:60,MemberB:40")`)
 	expensesCreateCmd.Flags().String("paid-by", "", "Who paid (name, defaults to you)")
 	expensesCreateCmd.Flags().StringP("currency", "c", "", "Currency code (e.g. USD)")
+	expensesCreateCmd.Flags().String("date", "", "Expense date (YYYY-MM-DD, defaults to today)")
+	expensesCreateCmd.Flags().String("details", "", "Notes attached to the expense")
 
 	expensesCmd.AddCommand(expensesListCmd)
 	expensesCmd.AddCommand(expensesCreateCmd)
 	expensesCmd.AddCommand(expensesDeleteCmd)
+	expensesCmd.AddCommand(expensesShowCmd)
 	rootCmd.AddCommand(expensesCmd)
 }
